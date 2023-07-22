@@ -73,16 +73,19 @@ regional_gva_prep2 <- regional_gva_prep %>%
   left_join(sectoral_growth %>% select(label, national_sectoral_growth),
             by = "label") %>%
   left_join(regional_growth %>% select(`ITL region code`, regional_growth),
-            by = "ITL region code")
+            by = "ITL region code") %>%
+  mutate(NS = yr1 * national_growth,
+         IM = yr1 * (national_sectoral_growth - national_growth),
+         RS = yr1 * (regional_sector_growth - national_sectoral_growth))
 
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
 ### CALCULATE SHIFT-SHARE
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
 
 regional_gva_shiftshare <- regional_gva_prep2 %>%
-  summarise(NE = sum(yr1 * national_growth)/sum(yr1),
-            SE = sum(yr1 * (national_sectoral_growth - national_growth))/sum(yr1),
-            CE = sum(yr1 * (regional_sector_growth - national_sectoral_growth)/sum(yr1)),
+  summarise(NE = sum(NS)/sum(yr1),
+            SE = sum(IM)/sum(yr1),
+            CE = sum(RS)/sum(yr1),
             .by = `ITL region code`)
 
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
@@ -91,7 +94,7 @@ regional_gva_shiftshare <- regional_gva_prep2 %>%
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
 
 regional_gva_prep2 %>%
-  filter(`ITL region name` == "Enfield") %>%
+  filter(`ITL region name` == "Westminster") %>%
   ggplot(aes(x = national_sectoral_growth, y = regional_sector_growth, label = label_short)) +
   geom_point() +
   geom_text(nudge_y = 0.02) +
@@ -127,7 +130,7 @@ regional_gva_shiftshare %>%
 # not shift-share
 
 retail_wfh <- regional_gva_prep2 %>%
-  #filter(str_detect(`ITL region code`, "TLI.*")) %>%
+  filter(str_detect(`ITL region code`, "TL[JH].*")) %>%
   filter(label_short == "R") %>%
   left_join(whf_itl3,
             by = c("ITL region code" = "itl3")) %>%
@@ -137,10 +140,10 @@ retail_wfh <- regional_gva_prep2 %>%
 
 retail_wfh %>%
   ggplot() +
-  geom_point(aes(x = wfh_growth, y = regional_sector_growth, color = Broad_RUC11)) +
+  geom_point(aes(x = `2019`, y = regional_sector_growth, color = Broad_RUC11)) +
   facet_wrap(~Broad_RUC11)
 
-lm_wfh <- lm(regional_sector_growth ~  wfh_growth + Broad_RUC11,
-             retail_wfh)
+lm_wfh <- lm(regional_sector_growth ~  `2019`,
+             retail_wfh %>% filter(Broad_RUC11 == "Predominantly Rural"))
 
 summary(lm_wfh)         
