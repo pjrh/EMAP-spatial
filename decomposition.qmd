@@ -1,12 +1,20 @@
 ---
 title: "Decomposition"
-format: html
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+    embed-resources: true
 editor: visual
 ---
 
 # Introduction
 
 ```{r}
+#| output: false
+#| warning: false
+#| message: false
+
 library(tidyverse)
 library(glue)
 library(readxl)
@@ -65,12 +73,22 @@ whf_itl3 <- read_excel("data/whf_itl3.xlsx",
          wfh_change = `2020` - `2018`,
          wfh_growth = (`2020` - `2018`)/`2018`)
 
-wfh_sector_2020 <- read_excel("data/homeworkingintheuklabourmarket2020-2.xls", 
+wfh_sector_2020_in <- read_excel("data/homeworkingintheuklabourmarket2020-2.xls", 
     sheet = "Table 3", skip = 5, n_max = 23) %>%
   rename(sector = `...1`,
          sector_wfh_pc = `Ever work at home4...12`) %>%
   filter(!is.na(sector)) %>%
-  mutate(label_short = str_extract(sector, "^[A-Z]"))
+  mutate(label_short = str_extract(sector, "^[A-Z]"),
+         label_short = case_match(label_short,
+                                  "A" ~ "AB",
+                                  "B" ~ "AB",
+                                  "D" ~ "DE",
+                                  "E" ~ "DE",
+                                  .default = label_short))
+
+wfh_sector_2020 <- wfh_sector_2020_in %>%
+  summarise(sector_wfh_pc = sum(sector_wfh_pc*Employed3)/sum(Employed3),
+            .by = label_short)
 
 # Rural/Urban classification for ITL3 regions
 Rural_Urban_NUTS3 <- read_csv("data/Rural_Urban_Classification_(2011)_of_NUTS_3_(2015)_in_England.csv") %>%
@@ -80,277 +98,18 @@ Rural_Urban_NUTS3 <- read_csv("data/Rural_Urban_Classification_(2011)_of_NUTS_3_
 
 ```
 
-# Shift share
-
-```{r}
-
-# wfh vs industry mix for 2020
-
-industry_mix_wfh_pc_2020 <- employment_by_region_and_sector %>%
-     pivot_longer(matches("^[A-Z] : .*"), 
-                   names_to = "sector", values_to = "employments") %>%
-  mutate(label_short = str_extract(sector, "^[A-Z]"),
-         employments = as.numeric(employments)) %>%
-  filter(year == 2020) %>%
-  left_join(wfh_sector_2020 %>% select(label_short, sector_wfh_pc),
-            by = "label_short") %>%
-  summarise(industry_mix_wfh_pc = 0.01*sum(sector_wfh_pc * employments)/sum(employments),
-            .by = ITL_code)
-
-wfh_mix_actual_2020 <- whf_itl3 %>%
-  select(itl3, `2020`) %>%
-  left_join(industry_mix_wfh_pc_2020,
-            by = c("itl3" = "ITL_code")) %>%
-  mutate(wfh_diff = `2020` - industry_mix_wfh_pc)
-
-
-# keep only England
-# select years of interest
-# select only major industry rows
-regional_gva_prep <- regional_gva_by_sector %>%
-  rename(yr1 = `2019`,
-         yr2 = `2021`) %>%
-  filter(str_detect(`SIC07 code`, "^([A-Z]|AB|DE)[ ].*"),
-         !str_detect(`ITL_code`, "^TL[LNM]")) %>% #just keep England
-  select(all_of(c("ITL_code", 
-                  "ITL region name",
-                  "SIC07 code", 
-                  "SIC07 description",
-                  "yr1", 
-                  "yr2"))) %>%
-  mutate(regional_sector_growth = (yr2-yr1)/yr1,
-         label_short = str_extract(`SIC07 code`, "^[A-Z]*"),
-         label = paste0(label_short, " - ", `SIC07 description`))
-
-# find the national growth for each industry sector
-sectoral_growth <- regional_gva_prep %>%
-  summarise(yr1 = sum(yr1),
-            yr2 = sum(yr2),
-            .by = label) %>%
-  mutate(national_sectoral_growth = (yr2-yr1)/yr1)
-
-# find the overall national growth
-national_growth <- regional_gva_prep %>%
-  summarise(yr1 = sum(yr1),
-            yr2 = sum(yr2)) %>%
-  mutate(national_growth = (yr2-yr1)/yr1) %>%
-  pull(national_growth)
-
-# find the average regional growth
-regional_growth <- regional_gva_prep %>%
-  summarise(yr1 = sum(yr1),
-            yr2 = sum(yr2),
-            .by = ITL_code) %>%
-  mutate(regional_growth = (yr2-yr1)/yr1)
-
-# add the sub calculations back in to get table ready for summarising
-regional_gva_prep2 <- regional_gva_prep %>%
-  left_join(sectoral_growth %>% select(label, national_sectoral_growth),
-            by = "label") %>%
-  left_join(regional_growth %>% select(`ITL_code`, regional_growth),
-            by = "ITL_code") %>%
-  mutate(NS = yr1 * national_growth,
-         IM = yr1 * (national_sectoral_growth - national_growth),
-         RS = yr1 * (regional_sector_growth - national_sectoral_growth))
-
-#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
-### CALCULATE SHIFT-SHARE
-#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
-
-regional_gva_shiftshare <- regional_gva_prep2 %>%
-  summarise(NE = sum(NS)/sum(yr1),
-            SE = sum(IM)/sum(yr1),
-            CE = sum(RS)/sum(yr1),
-            .by = `ITL_code`) %>%
-  left_join(wfh_mix_actual_2020,
-            by = c("ITL_code" = "itl3")) %>%
-  mutate(London = if_else(str_detect(ITL_code, "TLI"), "London", "Non-London"))
-
-regional_gva_shiftshare <- left_join(regional_growth %>% select(ITL_code, regional_growth),
-                                     regional_gva_shiftshare,
-                                     by = "ITL_code") 
-
-regional_gva_shiftshare %>%
-  gt() %>%
-  fmt_percent(where(is.numeric))
-
-```
-
-we find that there is a positive correlation between GVA growth over the period 2018 to 2021 and the proportion of the workforce who worked from home in 2020 - but not for London.
-
-```{r}
-reg <- regional_gva_shiftshare %>%
-  left_join(Rural_Urban_NUTS3, by = "ITL_code") %>%
-  filter(London != "London") %>%
-  #filter(Broad_RUC11 == "Urban with Significant Rural") %>%
-  #filter(Broad_RUC11 == "Predominantly Urban") %>%
-  {lm(regional_growth ~ `2020`, data = .)}
-
-summary(reg)
-
-regional_gva_shiftshare %>%
-  left_join(Rural_Urban_NUTS3, by = "ITL_code") %>%
-  mutate(ITL1 = str_sub(ITL_code, 3, 3)) %>%
-  #filter(str_detect(ITL_code, "TL[K]")) %>%
-  ggplot() +
-  geom_point(aes(x = `2020`, y = regional_growth, color = London)) +
-  xlab("WFH rate in 2020") +
-  ylab("Regional growth")
-```
-
-```{r}
-reg <- regional_gva_shiftshare %>%
-  left_join(Rural_Urban_NUTS3, by = "ITL_code") %>%
-  filter(!str_detect(ITL_code, "TL[I]")) %>%
-  #filter(Broad_RUC11 == "Urban with Significant Rural") %>%
-  #filter(Broad_RUC11 == "Predominantly Urban") %>%
-  {lm(CE ~ `2020`, data = .)}
-
-summary(reg)
-
-regional_gva_shiftshare %>%
-  left_join(Rural_Urban_NUTS3, by = "ITL_code") %>%
-  mutate(ITL1 = str_sub(ITL_code, 3, 3)) %>%
-  #filter(str_detect(ITL_code, "TL[K]")) %>%
-  ggplot() +
-  geom_point(aes(x = `2020`, y = CE, color = London))
-```
-
-```{r}
-reg <- regional_gva_shiftshare %>%
-  left_join(Rural_Urban_NUTS3, by = "ITL_code") %>%
-  filter(London != "London") %>%
-  #filter(Broad_RUC11 == "Urban with Significant Rural") %>%
-  #filter(Broad_RUC11 == "Predominantly Urban") %>%
-  {lm(CE ~ wfh_diff, data = .)}
-
-summary(reg)
-
-regional_gva_shiftshare %>%
-  left_join(Rural_Urban_NUTS3, by = "ITL_code") %>%
-  mutate(ITL1 = str_sub(ITL_code, 3, 3)) %>%
-  #filter(str_detect(ITL_code, "TL[K]")) %>%
-  ggplot() +
-  geom_point(aes(x = wfh_diff, y = CE, color = London))
-```
-
-```{r}
-regional_gva_prep2 %>%
-  mutate(RS = RS/yr1) %>%
-  summarise(sd_RS = sd(RS),
-            .by = label) %>%
-  arrange(-sd_RS) %>%
-  gt()
-```
-
-## Shift share plots
-
-```{r}
-ss_plot <- function(ITL_set) {
-  
-CE <- regional_gva_shiftshare %>%
-    filter(ITL_code == ITL_set) %>%
-    pull(CE)
-
-growth <- regional_growth %>%
-    filter(ITL_code == ITL_set) %>%
-    pull(regional_growth)
-
-name <- regional_gva_prep %>%
-  select(ITL_code, `ITL region name`) %>%
-  distinct() %>%
-  filter(ITL_code == ITL_set) %>%
-  pull(`ITL region name`)
-
-sub_string <- wfh_mix_actual_2020 %>%
-    filter(itl3 == ITL_set) %>%
-    mutate(string = glue("WFH rate in 2020 was {formatC(100*`2020`, format = 'f', digits = 1)}% ({formatC(100*wfh_diff, format = 'f', digits = 1, flag = '+')} p.p. from expected)")) %>%
-    pull(string)
-
-regional_gva_prep2 %>%
-  filter(ITL_code == ITL_set) %>%
-  left_join(wfh_sector_2020 %>% select(label_short, sector_wfh_pc),
-            by = "label_short") %>%
-  ggplot(aes(x = national_sectoral_growth, 
-             y = regional_sector_growth,
-             label = label_short, 
-             color = sector_wfh_pc)) +
-  geom_point() +
-  geom_text(nudge_y = 0.07) +
-  geom_abline(slope = 1,
-              intercept = 0,
-              linetype = 2) + 
-  geom_vline(xintercept = national_growth,
-             linetype = 3) + 
-  geom_hline(data = function(x) distinct(select(x, regional_growth)),
-             aes(yintercept = regional_growth),
-             linetype = 3) +
-  geom_vline(xintercept = 0,
-             linetype = 1) + 
-  geom_hline(yintercept = 0,
-             linetype = 1) +
-  ggtitle(paste0("Shift share for ", 
-                 name, 
-                 " with ", 
-                 formatC(100*growth, format = "f", digits = 1),
-                 "% growth and ",
-                 formatC(100*CE, format = "f", digits = 1),
-                 "% competitive share"),
-          sub_string) +
-  xlab("National sectoral growth") +
-  ylab("Regional sectoral growth")
-}
-
-regional_gva_prep %>%
-  filter(ITL_code %in% c("TLJ21", "TLJ32")) %>%
-  select(`ITL region name`, label, yr1, yr2) %>%
-  group_by(`ITL region name`) %>%
-  mutate(yr1_pc = yr1/sum(yr1),
-         yr2_pc = yr2/sum(yr2)) %>%
-  ungroup() %>%
-  arrange(label) %>%
-  gt() %>%
-  fmt_percent(matches(".*_pc$"))
-
-ss_plot("TLJ21") +
-  xlim(-0.3, 0.15) +
-  ylim(-0.55, 1.1)
-```
-
-```{r}
-ss_plot("TLJ32")  +
-  xlim(-0.3, 0.15) +
-  ylim(-0.55, 1.1)
-```
-
-```{r}
-regional_gva_prep %>%
-  filter(ITL_code %in% c("TLD44", "TLD45")) %>%
-  select(`ITL region name`, label, yr1, yr2) %>%
-  group_by(`ITL region name`) %>%
-  mutate(yr1_pc = yr1/sum(yr1),
-         yr2_pc = yr2/sum(yr2)) %>%
-  ungroup() %>%
-  arrange(label) %>%
-  gt() %>%
-  fmt_percent(matches(".*_pc$"))
-
-ss_plot("TLD45")  +
-  xlim(-0.3, 0.15) +
-  ylim(-0.55, 0.5)
-```
-
-```{r}
-ss_plot("TLD44")  +
-  xlim(-0.3, 0.15) +
-  ylim(-0.55, 0.5)
-```
-
-```{r}
-regional_gva_prep %>% distinct(label) %>% arrange(label) %>% gt()
-```
-
 # Decomposition
+
+The decomposition is shown first because the dataset used to create it feeds into the other work below - even though the decomposition itself didn't really work...
+
+$$
+\frac{GVA}{population} = \frac{GVA}{THW} \times \frac{TWH}{EMPL} \times \frac{homeworkers}{nonhomeworkers} \times \frac{EMPL}{homeworkers} \times \frac{nonhomeworkers}{population}
+$$
+
+::: panel-tabset
+## Hide decomposition
+
+## Show decomposition
 
 ```{r}
 yrs = c(2018, 2019, 2020, 2021)
@@ -431,8 +190,342 @@ decomp_growth %>%
   ggplot() +
   geom_point(aes(x = growth_homeworking_ratio, y = growth_gdp_per_cap, color = Broad_RUC11))
 ```
+:::
+
+# Shift share
+
+The shift share results table is also very long (one row per ITL3 region)
+so it is hidden - click show to see the raw results
+
+::: panel-tabset
+
+## Hide
+
+## Show the shift share results
+
+```{r}
+
+# wfh vs industry mix for 2020
+
+industry_mix_wfh_pc_2020 <- employment_by_region_and_sector %>%
+     pivot_longer(matches("^[A-Z] : .*"), 
+                   names_to = "sector", values_to = "employments") %>%
+  mutate(label_short = str_extract(sector, "^[A-Z]"),
+         label_short = case_match(label_short,
+                                  "A" ~ "AB",
+                                  "B" ~ "AB",
+                                  "D" ~ "DE",
+                                  "E" ~ "DE",
+                                  .default = label_short),
+         employments = as.numeric(employments)) %>%
+  summarise(employments = sum(employments),
+            .by = c(year, ITL_code, label_short)) %>%
+  filter(year == 2020) %>%
+  left_join(wfh_sector_2020 %>% select(label_short, sector_wfh_pc),
+            by = "label_short") %>%
+  summarise(industry_mix_wfh_pc = 0.01*sum(sector_wfh_pc * employments)/sum(employments),
+            .by = ITL_code)
+
+wfh_mix_actual_2020 <- whf_itl3 %>%
+  select(itl3, `2020`) %>%
+  left_join(industry_mix_wfh_pc_2020,
+            by = c("itl3" = "ITL_code")) %>%
+  mutate(wfh_diff = `2020` - industry_mix_wfh_pc)
+
+
+# keep only England
+# select years of interest
+# select only major industry rows
+regional_gva_prep <- regional_gva_by_sector %>%
+  rename(yr1 = `2019`,
+         yr2 = `2021`) %>%
+  filter(str_detect(`SIC07 code`, "^([A-Z]|AB|DE)[ ].*"),
+         !str_detect(`ITL_code`, "^TL[LNM]")) %>% #just keep England
+  select(all_of(c("ITL_code", 
+                  "ITL region name",
+                  "SIC07 code", 
+                  "SIC07 description",
+                  "yr1", 
+                  "yr2"))) %>%
+  mutate(regional_sector_growth = if_else(yr1 == 0 & yr2 == 0, 
+                                            0,
+                                          (yr2-yr1)/yr1),
+         label_short = str_extract(`SIC07 code`, "^[A-Z]*"),
+         label = paste0(label_short, " - ", `SIC07 description`))
+
+# find the national growth for each industry sector
+sectoral_growth <- regional_gva_prep %>%
+  summarise(yr1 = sum(yr1),
+            yr2 = sum(yr2),
+            .by = label) %>%
+  mutate(national_sectoral_growth = (yr2-yr1)/yr1)
+
+# find the overall national growth
+national_growth <- regional_gva_prep %>%
+  summarise(yr1 = sum(yr1),
+            yr2 = sum(yr2)) %>%
+  mutate(national_growth = (yr2-yr1)/yr1) %>%
+  pull(national_growth)
+
+# find the average regional growth
+regional_growth <- regional_gva_prep %>%
+  summarise(yr1 = sum(yr1),
+            yr2 = sum(yr2),
+            .by = ITL_code) %>%
+  mutate(regional_growth = (yr2-yr1)/yr1)
+
+# add the sub calculations back in to get table ready for summarising
+regional_gva_prep2 <- regional_gva_prep %>%
+  left_join(sectoral_growth %>% select(label, national_sectoral_growth),
+            by = "label") %>%
+  left_join(regional_growth %>% select(`ITL_code`, regional_growth),
+            by = "ITL_code") %>%
+  mutate(NS = yr1 * national_growth,
+         IM = yr1 * (national_sectoral_growth - national_growth),
+         RS = yr1 * (regional_sector_growth - national_sectoral_growth))
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
+### CALCULATE SHIFT-SHARE
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
+
+regional_gva_shiftshare <- regional_gva_prep2 %>%
+  summarise(NE = sum(NS)/sum(yr1),
+            SE = sum(IM)/sum(yr1),
+            CE = sum(RS)/sum(yr1),
+            .by = `ITL_code`) %>%
+  left_join(wfh_mix_actual_2020,
+            by = c("ITL_code" = "itl3")) %>%
+  mutate(London = if_else(str_detect(ITL_code, "TLI"), "London", "Non-London"))
+
+regional_gva_shiftshare <- left_join(regional_growth %>% select(ITL_code, regional_growth),
+                                     regional_gva_shiftshare,
+                                     by = "ITL_code") 
+
+regional_gva_shiftshare %>%
+  gt() %>%
+  fmt_percent(where(is.numeric)) %>%
+  cols_label(`2020` = "WFH rate in 2020",
+             industry_mix_wfh_pc = "average WFH rate for industry mix")
+
+```
+
+:::
+
+## OLS regression of GVA growth against WFH
+
+This isn't actually a shift share - just using the same dataframe (the code got out of order)
+
+We find that there is a positive correlation between GVA growth over the period 2019 to 2021 and the proportion of the workforce who worked from home in 2020 - but not for London.
+
+```{r}
+hours_reg <- hours_prep %>% filter(year %in% c(2019, 2020)) %>%
+  pivot_wider(names_from = year, values_from = THW) %>%
+  mutate(hours_growth = (`2020` - `2019`)/`2019`) %>%
+  select(ITL_code, hours_growth)
+
+reg <- regional_gva_shiftshare %>%
+  left_join(Rural_Urban_NUTS3, by = "ITL_code") %>%
+  left_join(hours_reg, by = "ITL_code") %>%
+  filter(London != "London") %>%
+  #filter(Broad_RUC11 == "Urban with Significant Rural") %>%
+  #filter(Broad_RUC11 == "Predominantly Urban") %>%
+  {lm(regional_growth ~ `2020`, data = .)}
+
+summary(reg)
+
+regional_gva_shiftshare %>%
+  left_join(Rural_Urban_NUTS3, by = "ITL_code") %>%
+  mutate(ITL1 = str_sub(ITL_code, 3, 3)) %>%
+  #filter(str_detect(ITL_code, "TL[K]")) %>%
+  ggplot() +
+  geom_point(aes(x = `2020`, y = regional_growth, color = London)) +
+  xlab("WFH rate in 2020") +
+  ylab("Regional growth") +
+  geom_smooth(aes(x = `2020`, y = regional_growth), method='lm', formula= y~x, data = regional_gva_shiftshare %>% filter(London != "London"), se = FALSE)
+```
+
+## Regression of competitive share against WFH
+
+```{r}
+reg <- regional_gva_shiftshare %>%
+  left_join(Rural_Urban_NUTS3, by = "ITL_code") %>%
+  filter(!str_detect(ITL_code, "TL[I]")) %>%
+  #filter(Broad_RUC11 == "Urban with Significant Rural") %>%
+  #filter(Broad_RUC11 == "Predominantly Urban") %>%
+  {lm(CE ~ `2020`, data = .)}
+
+summary(reg)
+
+regional_gva_shiftshare %>%
+  left_join(Rural_Urban_NUTS3, by = "ITL_code") %>%
+  mutate(ITL1 = str_sub(ITL_code, 3, 3)) %>%
+  #filter(str_detect(ITL_code, "TL[K]")) %>%
+  ggplot() +
+  geom_point(aes(x = `2020`, y = CE, color = London))
+```
+
+```{r}
+reg <- regional_gva_shiftshare %>%
+  left_join(Rural_Urban_NUTS3, by = "ITL_code") %>%
+  left_join(hours_reg, by = "ITL_code") %>%
+  filter(London != "London") %>%
+  #filter(Broad_RUC11 == "Urban with Significant Rural") %>%
+  #filter(Broad_RUC11 == "Predominantly Urban") %>%
+  {lm(CE ~ wfh_diff, data = .)}
+
+summary(reg)
+
+regional_gva_shiftshare %>%
+  left_join(Rural_Urban_NUTS3, by = "ITL_code") %>%
+  mutate(ITL1 = str_sub(ITL_code, 3, 3)) %>%
+  #filter(str_detect(ITL_code, "TL[K]")) %>%
+  ggplot() +
+  geom_point(aes(x = wfh_diff, y = CE, color = London)) +
+  geom_smooth(aes(x = wfh_diff, y = CE), method='lm', formula= y~x, data = regional_gva_shiftshare %>% filter(London != "London"), se = FALSE)
+```
+
+```{r}
+regional_gva_prep2 %>%
+  group_by(ITL_code) %>%
+  mutate(RS_prop = RS/sum(yr1)) %>%
+  ungroup() %>%
+  summarise(sd_RS = sd(RS_prop),
+            .by = label) %>%
+  arrange(-sd_RS) %>%
+  gt() %>%
+  fmt_percent(sd_RS)
+```
+
+```{r}
+manufacturing <- regional_gva_prep2 %>% 
+  summarise(C = sum(if_else(label_short == "C", yr1, 0)), 
+            tot = sum(yr1), 
+            .by = ITL_code) %>%
+  mutate(C_pc = C/tot) 
+
+a <- regional_gva_shiftshare %>%
+  left_join(manufacturing)
+
+# %>%
+#   arrange(-C_pc) %>%
+#   gt() %>%
+#   fmt_percent(C_pc)
+```
+
+## Shift share plots
+
+```{r}
+ss_plot <- function(ITL_set) {
+  
+CE <- regional_gva_shiftshare %>%
+    filter(ITL_code == ITL_set) %>%
+    pull(CE)
+
+growth <- regional_growth %>%
+    filter(ITL_code == ITL_set) %>%
+    pull(regional_growth)
+
+name <- regional_gva_prep %>%
+  select(ITL_code, `ITL region name`) %>%
+  distinct() %>%
+  filter(ITL_code == ITL_set) %>%
+  pull(`ITL region name`)
+
+sub_string <- wfh_mix_actual_2020 %>%
+    filter(itl3 == ITL_set) %>%
+    mutate(string = glue("WFH rate in 2020 was {formatC(100*`2020`, format = 'f', digits = 1)}% ({formatC(100*wfh_diff, format = 'f', digits = 1, flag = '+')} p.p. from expected)")) %>%
+    pull(string)
+
+regional_gva_prep2 %>%
+  filter(ITL_code == ITL_set) %>%
+  left_join(wfh_sector_2020 %>% select(label_short, sector_wfh_pc),
+            by = "label_short") %>%
+  ggplot(aes(x = national_sectoral_growth, 
+             y = regional_sector_growth,
+             label = label_short, 
+             color = sector_wfh_pc)) +
+  geom_point() +
+  geom_text(nudge_y = 0.07) +
+  geom_abline(slope = 1,
+              intercept = 0,
+              linetype = 2) + 
+  geom_vline(xintercept = national_growth,
+             linetype = 3) + 
+  geom_hline(data = function(x) distinct(select(x, regional_growth)),
+             aes(yintercept = regional_growth),
+             linetype = 3) +
+  geom_vline(xintercept = 0,
+             linetype = 1) + 
+  geom_hline(yintercept = 0,
+             linetype = 1) +
+  ggtitle(paste0(name, 
+                 " with ", 
+                 formatC(100*growth, format = "f", digits = 1),
+                 "% growth and ",
+                 formatC(100*CE, format = "f", digits = 1),
+                 "% competitive share"),
+          sub_string) +
+  xlab("National sectoral growth") +
+  ylab("Regional sectoral growth")
+}
+
+regional_gva_prep %>%
+  filter(ITL_code %in% c("TLJ21", "TLJ32")) %>%
+  select(`ITL region name`, label, yr1, yr2) %>%
+  group_by(`ITL region name`) %>%
+  mutate(yr1_pc = yr1/sum(yr1),
+         yr2_pc = yr2/sum(yr2)) %>%
+  ungroup() %>%
+  arrange(label) %>%
+  gt() %>%
+  fmt_percent(matches(".*_pc$"))
+
+ss_plot("TLJ21") +
+  xlim(-0.3, 0.15) +
+  ylim(-0.55, 1.1)
+```
+
+```{r}
+ss_plot("TLJ32")  +
+  xlim(-0.3, 0.15) +
+  ylim(-0.55, 1.1)
+```
+
+```{r}
+regional_gva_prep %>%
+  filter(ITL_code %in% c("TLD44", "TLD45")) %>%
+  select(`ITL region name`, label, yr1, yr2) %>%
+  group_by(`ITL region name`) %>%
+  mutate(yr1_pc = yr1/sum(yr1),
+         yr2_pc = yr2/sum(yr2)) %>%
+  ungroup() %>%
+  arrange(label) %>%
+  gt() %>%
+  fmt_percent(matches(".*_pc$"))
+
+ss_plot("TLD45")  +
+  xlim(-0.3, 0.2) +
+  ylim(-0.5, 0.5)
+```
+
+```{r}
+ss_plot("TLD44")  +
+  xlim(-0.3, 0.2) +
+  ylim(-0.5, 0.5)
+```
+
+```{r}
+ss_plot("TLD62")
+ss_plot("TLD46")
+```
+
+```{r}
+regional_gva_prep %>% distinct(label) %>% arrange(label) %>% gt()
+```
 
 # Panel regression
+
+## With individual fixed effects
 
 ```{r}
 panel <- decomp %>%
@@ -464,6 +557,37 @@ summary(a)
 a <- plm(log(hrs_per_job) ~ wfh_pc, 
          data = panel, 
          #effect = "twoways",
+         model = "within")
+
+summary(a)
+```
+
+## With individual and time fixed effects
+
+All results lose significance
+
+```{r}
+a <- plm(log(gdp_per_cap) ~ wfh_pc + log(hrs_per_job) + employment_rate, 
+         data = panel, 
+         effect = "twoways",
+         model = "within")
+
+summary(a)
+```
+
+```{r}
+a <- plm(gdp_per_cap ~ hrs_per_job, 
+         data = panel, 
+         effect = "twoways",
+         model = "within")
+
+summary(a)
+```
+
+```{r}
+a <- plm(log(hrs_per_job) ~ wfh_pc, 
+         data = panel, 
+         effect = "twoways",
          model = "within")
 
 summary(a)
