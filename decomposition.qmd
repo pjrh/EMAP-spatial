@@ -21,6 +21,7 @@ library(readxl)
 library(gt)
 library(gtsummary)
 library(plm)
+library(ggrepel)
 
 
 # GVA data 
@@ -405,7 +406,7 @@ tbl_merge(tbls = list(regtbl, reg3)) %>%
 ```{r}
 reg <- reg_data %>%
   filter(London != "London") %>%
-  {lm(regional_growth ~ `2020` + yr1, data = .)}
+  {lm(regional_growth ~ `2020` + log(yr1_pp)  + hours_growth, data = .)}
 
 summary(reg)
 
@@ -416,7 +417,7 @@ summary(reg)
 ```{r}
 reg <- reg_data %>%
   filter(London != "London") %>%
-  {lm(CE ~ `2020`, data = .)}
+  {lm(CE ~ `2020` + hours_growth + log(yr1_pp), data = .)}
 
 summary(reg)
 
@@ -428,7 +429,7 @@ reg_data %>%
 ```{r}
 reg <- reg_data %>%
   filter(London != "London") %>%
-  {lm(CE ~ wfh_diff + yr1, data = .)}
+  {lm(CE ~ wfh_diff, data = .)}
 
 summary(reg)
 
@@ -505,7 +506,8 @@ regional_gva_prep2 %>%
              label = label_short, 
              color = sector_wfh_pc)) +
   geom_point() +
-  geom_text(nudge_y = 0.07) +
+  geom_text_repel(direction = "y") +
+  #geom_text(nudge_y = 0.07) +
   geom_abline(slope = 1,
               intercept = 0,
               linetype = 2) + 
@@ -526,7 +528,8 @@ regional_gva_prep2 %>%
                  "% competitive share"),
           sub_string) +
   xlab("National sectoral growth") +
-  ylab("Regional sectoral growth")
+  ylab("Regional sectoral growth") + 
+  theme_classic(base_size = 16)
 }
 
 regional_gva_prep %>%
@@ -552,6 +555,10 @@ ss_plot("TLJ32")  +
 ```
 
 ```{r}
+#| fig-width: 8
+#| fig-height: 3
+    
+    
 regional_gva_prep %>%
   filter(ITL_code %in% c("TLD44", "TLD45")) %>%
   select(`ITL region name`, label, yr1, yr2) %>%
@@ -569,6 +576,9 @@ ss_plot("TLD45")  +
 ```
 
 ```{r}
+#| fig-width: 8
+#| fig-height: 3
+
 ss_plot("TLD44")  +
   xlim(-0.3, 0.2) +
   ylim(-0.5, 0.5)
@@ -654,3 +664,41 @@ a <- plm(log(hrs_per_job) ~ wfh_pc,
 
 summary(a)
 ```
+
+
+```{r}
+new_reg_data <- regional_gva_prep2 %>%
+  left_join(regional_gva_shiftshare,
+            by = "ITL_code")
+
+new_reg_data %>%
+  filter(label_short %in% c("C", "DE", "H", "K", "G", "J", "L")) %>%
+  ggplot() +
+  geom_point(aes(x = `2020`, y = RS)) +
+  facet_wrap(~label_short,
+             ncol = 3,
+             scales = "free_y")
+
+```
+
+
+```{r}
+library(sp)
+library(rgdal)
+sp::set_evolution_status(0L)
+ITL3_map <- rgdal::readOGR("data/ITL3_shapes/ITL3_JAN_2021_UK_BUC_V3.shp")
+#sp::proj4string(ITL3_map) <- sp::CRS("27700")
+plot(ITL3_map)
+
+ITL3_map2 <- fortify(ITL3_map, region = "ITL321CD") %>%
+  left_join(regional_gva_shiftshare,
+            by = c("id" = "ITL_code")) %>%
+  filter(!is.na(CE))
+
+ITL3_map2 %>%  
+ggplot(aes(x = long, y = lat, group = group)) +
+  geom_polygon(aes(fill = CE), color = "black", linewidth = 0.1) +
+  coord_equal(ratio=1) +
+  theme_void()
+```
+
